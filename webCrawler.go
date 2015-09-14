@@ -16,23 +16,48 @@ func Crawl(url string, depth int, fetcher Fetcher) {
 	// TODO: Fetch URLs in parallel.
 	// TODO: Don't fetch the same URL twice.
 	// This implementation doesn't do either:
+	defer func() { 
+		switch cc := <-crawlCounter; cc {
+		case 1:
+			close(crawlResults)
+		default:
+			crawlCounter <- (cc-1)
+		}
+	}()
+
 	if depth <= 0 {
 		return
 	}
 	body, urls, err := fetcher.Fetch(url)
 	if err != nil {
-		fmt.Println(err)
+		crawlResults <- fmt.Sprintf("%v", err)
 		return
 	}
-	fmt.Printf("found: %s %q\n", url, body)
+	crawlResults <- fmt.Sprintf("found: %s %q", url, body)
 	for _, u := range urls {
-		Crawl(u, depth-1, fetcher)
+		var cu = <-crawlUrls
+		if _, visited := cu[u]; visited {
+			crawlUrls <- cu
+		} else {
+			crawlCounter <- (1 + <-crawlCounter)
+			cu[u] = true
+			crawlUrls <- cu
+			go Crawl(u, depth-1, fetcher)
+		}
 	}
 	return
 }
 
+var crawlResults = make(chan string, 10)
+var crawlCounter = make(chan int, 1)
+var crawlUrls = make(chan map[string]bool, 1)
 func main() {
-	Crawl("http://golang.org/", 4, fetcher)
+	crawlCounter <- 1
+	crawlUrls <- map[string]bool{ "http://golang.org/": true }
+	go Crawl("http://golang.org/", 4, fetcher)
+	for msg := range crawlResults {
+		fmt.Println(msg)
+	}
 }
 
 // fakeFetcher is Fetcher that returns canned results.
